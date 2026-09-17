@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Auslect",
+  "version": "0.2.1",
+  "description": "Lit à voix haute le contenu d'un article web.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "auslect@aln.dev",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": { "required": ["none"] }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  },
+  "permissions": ["activeTab", "scripting", "storage"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Auslect"
+  }
+}

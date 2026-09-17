@@ -1,0 +1,26 @@
+{
+  "name": "auslect",
+  "version": "0.2.1",
+  "description": "Extension Firefox (desktop + Android) qui lit à voix haute le contenu d'un article web.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node --test tests/",
+    "dev": "npm run build && web-ext run --source-dir ./dist",
+    "dev:android": "npm run build && web-ext run --source-dir ./dist --target=firefox-android"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "linkedom": "^0.18.13",
+    "onnxruntime-node": "^1.30.0",
+    "web-ext": "^10.6.0"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "onnxruntime-web": "^1.30.0",
+    "phonemizer": "^1.2.1"
+  }
+}
