@@ -1,0 +1,419 @@
+# TTS Reader
+
+> Extension Firefox (desktop + Android) qui lit à voix haute le contenu d'un article web, avec lecture en arrière-plan et contrôles sur l'écran verrouillé.
+
+TTS Reader extrait le texte propre de la page en cours (sans les menus, pubs ni navigation), le synthétise en audio et le joue comme le ferait une application de podcast : le son continue quand l'écran est éteint ou que le navigateur passe en arrière-plan, et les boutons play / pause s'affichent sur l'écran de verrouillage.
+
+Le moteur de synthèse est **interchangeable** : le projet démarre avec la synthèse intégrée du navigateur (rapide à mettre en place), puis bascule vers un modèle neuronal léger exécuté entièrement sur l'appareil, sans aucun serveur.
+
+---
+
+## Sommaire
+
+- [Pourquoi ce projet](#pourquoi-ce-projet)
+- [Fonctionnalités](#fonctionnalités)
+- [Architecture](#architecture)
+- [Design patterns](#design-patterns)
+- [Stack technique](#stack-technique)
+- [Prérequis](#prérequis)
+- [Installation](#installation)
+- [Utilisation en développement](#utilisation-en-développement)
+- [Structure du projet](#structure-du-projet)
+- [Détails techniques et pièges](#détails-techniques-et-pièges)
+- [Feuille de route](#feuille-de-route)
+- [Limitations connues](#limitations-connues)
+- [Compatibilité navigateur](#compatibilité-navigateur)
+- [Licence et crédits](#licence-et-crédits)
+
+---
+
+## Pourquoi ce projet
+
+Lire de longs articles au téléphone n'est pas toujours pratique : en marchant, en cuisinant, ou pour reposer les yeux. Les solutions existantes imposent souvent une application dédiée, un compte, ou du contenu à copier-coller manuellement.
+
+L'objectif de TTS Reader est de rester **dans le flux de lecture** : on est sur un article dans le navigateur, on appuie sur un bouton, et l'article est lu à voix haute — écran éteint si besoin.
+
+### Pourquoi une extension plutôt qu'une application Android native
+
+Une application native capable de lire n'importe quel texte à l'écran devrait passer par un `AccessibilityService`, dont la publication est quasiment interdite hors des vraies applications d'accessibilité, et qui ne renvoie qu'un texte « aplati » mélangé aux éléments d'interface.
+
+Une extension de navigateur, elle, s'exécute _dans le contexte de la page_ : elle a un accès direct au DOM, donc à une extraction de texte propre. Le compromis assumé est que la lecture ne fonctionne **que dans le navigateur** (pas dans les autres applications), ce qui couvre l'essentiel du besoin ici.
+
+---
+
+## Fonctionnalités
+
+- **Extraction de contenu propre** — isole le corps de l'article via le moteur du mode Lecture de Firefox.
+- **Lecture en arrière-plan** — le son ne s'interrompt pas quand l'écran s'éteint ou que Firefox passe en tâche de fond.
+- **Contrôles sur l'écran de verrouillage** — play / pause / titre de l'article via la Media Session API, comme une application audio.
+- **Pause / reprise fiables** — gestion par segments plutôt que par le `pause()` natif (notoirement instable sur mobile).
+- **Moteur de synthèse remplaçable** — synthèse intégrée du navigateur ou modèle neuronal local, sans changer le reste du code.
+- **100 % local** (à terme) — aucune donnée ni URL envoyée à un serveur externe.
+
+---
+
+## Architecture
+
+Le traitement est un pipeline vertical : le texte entre en haut, l'audio sort en bas. Chaque étage est indépendant du suivant, et un seul étage — le moteur — change quand on fait évoluer la synthèse.
+
+```
+┌─────────────────────────────────────────┐
+│  Content script  (dans la page)          │
+│  Readability → texte propre de l'article │
+└───────────────────┬─────────────────────┘
+                    │  { titre, texte, html }
+                    ▼
+┌─────────────────────────────────────────┐
+│  Service TTS  (Facade)                    │
+│  Une API unique : load / speak / pause    │
+└───────────────────┬─────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────┐
+│  Fabrique de moteur  (Factory)            │
+│  Détecte les capacités, choisit le moteur │
+└───────────────────┬─────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────┐
+│  Moteur ONNX  (Strategy + Adapter)        │
+│  Kokoro / Piper / Web Speech (secours)    │
+│  texte → Blob audio                       │
+└───────────────────┬─────────────────────┘
+                    │  segments audio
+                    ▼
+┌─────────────────────────────────────────┐
+│  Lecteur audio  (State machine)           │
+│  idle → generating → playing → paused     │
+└───────────────────┬─────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────┐
+│  <audio> + Media Session API              │
+│  Lecture en arrière-plan + lockscreen     │
+└─────────────────────────────────────────┘
+```
+
+### Flux de données
+
+1. L'utilisateur appuie sur le bouton de l'extension sur une page d'article.
+2. Le **content script** clone le DOM, le passe à Readability, et renvoie le contenu nettoyé.
+3. Le contenu est **segmenté** en blocs (paragraphes, titres) puis en phrases.
+4. Le **Service TTS** demande au moteur courant de synthétiser les segments en audio.
+5. Le **lecteur** enchaîne les segments audio dans un élément `<audio>` et publie l'état à la Media Session.
+6. Les événements de lecture (début de segment, progression, fin) remontent à l'interface pour le surlignage et les boutons.
+
+---
+
+## Design patterns
+
+Les patterns ne sont pas décoratifs : chacun répond à une contrainte concrète du projet.
+
+| Pattern       | Où                             | Pourquoi                                                                                                                                                  |
+| ------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Strategy**  | `TTSEngine` + moteurs concrets | Rendre le moteur de synthèse interchangeable sans toucher au reste. C'est ce qui permet de commencer avec un modèle puis de le remplacer par un meilleur. |
+| **Adapter**   | Chaque moteur concret          | `transformers.js`, `sherpa-onnx` et `speechSynthesis` ont des API incompatibles ; chaque moteur les adapte à l'interface commune `synthesize()`.          |
+| **Factory**   | `TTSEngineFactory`             | Instancier le bon moteur au démarrage selon les capacités détectées (WebGPU dispo ? sinon WASM ; échec ? repli Web Speech).                               |
+| **Facade**    | `TTSService`                   | Cacher toute la complexité (choix du moteur, chargement du modèle, découpage, cache) derrière quelques méthodes simples.                                  |
+| **State**     | `AudioPlayer`                  | Rendre chaque action légale ou impossible selon l'état courant, au lieu d'empiler des conditions ingérables. Règle les bugs de pause / reprise.           |
+| **Observer**  | Messagerie de l'extension      | Le lecteur émet des événements auxquels s'abonnent l'interface et la Media Session. Câblage fourni nativement par le `runtime messaging`.                 |
+| **Singleton** | `TTSService` (background)      | Le modèle ONNX (80–300 Mo) ne doit exister qu'une seule fois en mémoire, partagé par tous les onglets.                                                    |
+
+Principe directeur : **seul l'étage « Moteur » change** quand la synthèse évolue. Extraction, segmentation, machine à états, lecture et Media Session sont agnostiques du modèle.
+
+---
+
+## Stack technique
+
+| Domaine               | Choix                                                                 |
+| --------------------- | --------------------------------------------------------------------- |
+| Langage               | JavaScript (ES modules), HTML, CSS                                    |
+| Plateforme            | Extension WebExtension, Manifest V3                                   |
+| Extraction de contenu | [`@mozilla/readability`](https://github.com/mozilla/readability)      |
+| Synthèse (v1)         | Web Speech API (`speechSynthesis`), intégrée au navigateur            |
+| Synthèse (v2)         | Modèle ONNX local via `transformers.js` ou `sherpa-onnx` (ex. Kokoro) |
+| Lecture arrière-plan  | Élément `<audio>` + Media Session API                                 |
+| Bundler               | esbuild                                                               |
+| Outil de dev          | [`web-ext`](https://github.com/mozilla/web-ext) (officiel Mozilla)    |
+
+Aucun backend, aucun framework front. Le poids et la complexité vivent dans le modèle de synthèse, pas dans l'infrastructure.
+
+---
+
+## Prérequis
+
+- **Node.js** 18 ou plus récent
+- **Firefox** (desktop) pour le développement
+- **Firefox pour Android** + un téléphone en débogage USB pour la validation mobile (optionnel, étape finale)
+
+> Chrome pour Android ne prend pas en charge les extensions — voir [Compatibilité navigateur](#compatibilité-navigateur).
+
+---
+
+## Installation
+
+```bash
+# Cloner puis installer les dépendances
+git clone <url-du-repo> tts-reader
+cd tts-reader
+npm install
+
+# Construire le bundle
+npm run build
+
+# Lancer Firefox desktop avec l'extension chargée et rechargée à chaud
+npm run dev
+```
+
+Exemple de scripts `package.json` :
+
+```json
+{
+  "scripts": {
+    "build": "node build.js",
+    "dev": "web-ext run --source-dir ./dist",
+    "dev:android": "web-ext run --source-dir ./dist --target=firefox-android"
+  }
+}
+```
+
+---
+
+## Utilisation en développement
+
+Le cycle de développement se fait **sur Firefox desktop**, pas sur le téléphone : DevTools complets, rechargement à chaud, itération rapide.
+
+1. `npm run dev` ouvre un Firefox de test avec l'extension chargée.
+2. Aller sur un article, ouvrir le popup de l'extension, appuyer sur « Lire ».
+3. Modifier le code : `web-ext` recharge automatiquement.
+
+Le déploiement sur **Firefox Android** n'intervient qu'une fois la logique validée sur desktop :
+
+```bash
+# Téléphone branché, débogage USB activé, Firefox pour Android installé
+npm run dev:android
+```
+
+---
+
+## Tests
+
+```bash
+npm test    # suite unitaire, sans navigateur ni réseau
+```
+
+La suite couvre les trois endroits où une erreur est difficile à diagnostiquer à l'oreille :
+
+| Fichier                  | Ce qui est vérifié                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------- |
+| `wav.test.js`            | Entête PCM octet par octet, round-trip d'un signal connu, écrêtage des valeurs hors bornes.       |
+| `segmenter.test.js`      | Ordre des blocs, découpage en phrases, titres marqués, blocs vides ignorés.                      |
+| `audio-player.test.js`   | Machine à états : aucun segment sauté ni rejoué après pause/reprise, dans les deux modes de rendu. |
+
+### Diagnostic audio
+
+Quand le son sort faux, ce script tranche entre les trois causes possibles — modèle, backend d'inférence ou encodage :
+
+```bash
+node tests/kokoro-diagnostic.js q8 cpu
+```
+
+Il génère un échantillon, affiche un verdict basé sur le taux de passages par zéro (une voix tourne autour de 0,02–0,15 ; un bruit blanc approche 0,5) et écrit deux WAV dans `diagnostic/` : celui de notre encodeur et celui de `kokoro-js`. S'ils sonnent pareil, l'encodage est hors de cause.
+
+## Structure du projet
+
+```
+auslect/
+├── manifest.json              # Déclaration de l'extension (permissions, CSP)
+├── package.json
+├── build.js                   # Script de build esbuild
+├── src/
+│   ├── content/
+│   │   └── content-script.js  # Extraction Readability (tourne dans la page)
+│   ├── background/
+│   │   └── background.js       # Coordination : extraction → onglet lecteur
+│   ├── player-page/
+│   │   ├── player.html         # Onglet lecteur : c'est lui qui produit le son
+│   │   ├── player.js           # Héberge le Service TTS
+│   │   └── player.css
+│   ├── popup/
+│   │   ├── popup.html          # Télécommande : lance et pilote le lecteur
+│   │   ├── popup.js
+│   │   └── popup.css
+│   ├── tts/
+│   │   ├── TTSEngine.js         # Interface commune (Strategy)
+│   │   ├── TTSEngineFactory.js  # Sélection du moteur (Factory)
+│   │   ├── TTSService.js        # Point d'entrée unique (Facade + Singleton)
+│   │   ├── engines/
+│   │   │   ├── WebSpeechEngine.js  # mode SPEAK
+│   │   │   └── KokoroEngine.js     # mode SYNTHESIZE (pilote le worker)
+│   │   └── workers/
+│   │       └── kokoro-worker.js    # Inférence ONNX isolée du thread principal
+│   ├── player/
+│   │   ├── AudioPlayer.js       # Machine à états + enchaînement audio
+│   │   └── mediaSession.js      # Contrôles système / écran verrouillé
+│   └── lib/
+│       ├── segmenter.js         # Découpage blocs → phrases
+│       └── wav.js               # Assemblage des segments PCM en un WAV unique
+└── dist/                        # Sortie de build (chargée par web-ext)
+    └── ort/                     # Runtime ONNX embarqué (voir « CSP » plus bas)
+```
+
+---
+
+## Détails techniques et pièges
+
+### Readability est destructif
+
+`@mozilla/readability` **modifie** le document qu'on lui passe pendant l'analyse. Lui donner le `document` réel casse la page sous les yeux de l'utilisateur. Il faut donc toujours travailler sur un clone :
+
+```js
+import { Readability, isProbablyReaderable } from "@mozilla/readability";
+
+function extractArticle() {
+  if (!isProbablyReaderable(document)) return null; // page qui ressemble à un article ?
+  const clone = document.cloneNode(true); // clone obligatoire
+  const article = new Readability(clone).parse();
+  if (!article) return null;
+  return {
+    title: article.title,
+    text: article.textContent, // texte brut
+    html: article.content, // HTML nettoyé (garde les frontières de paragraphes)
+    lang: document.documentElement.lang || article.lang,
+  };
+}
+```
+
+Préférer `article.content` (HTML nettoyé) à `article.textContent` (texte aplati) : conserver les blocs `<p>` et `<h*>` permet d'insérer des pauses naturelles entre paragraphes et donne les points d'ancrage pour le surlignage.
+
+### La Web Speech API ne fonctionne pas en arrière-plan
+
+`speechSynthesis` n'est pas une session média au sens du système : elle ne s'enregistre pas comme « de l'audio en cours de lecture », ne survit pas au verrouillage de l'écran, et ne peut pas être capturée dans un fichier. Elle est parfaite pour un premier prototype (v1), mais **incompatible avec la lecture en arrière-plan**.
+
+### La lecture en arrière-plan exige un vrai fichier audio
+
+Pour que le système respecte la lecture (écran éteint, contrôles sur le lockscreen), il faut un **élément `<audio>` qui joue un Blob audio réel**, couplé à la **Media Session API**. C'est ce qui fait fonctionner les lecteurs de podcast web — et ce que la Web Speech API ne peut pas offrir.
+
+### WebGPU n'est pas encore actif sur Firefox Android
+
+Au moment d'écrire ces lignes (septembre 2026), WebGPU est disponible sur Firefox desktop (Windows, macOS) mais **pas encore sur Firefox Android** : le support est en développement, visé par Mozilla pour fin 2026. L'inférence du modèle tourne donc en **WebAssembly (CPU)**, ce qui est plus lent.
+
+Conséquence sur l'architecture : la génération est lente, et Firefox throttle les minuteurs des onglets inactifs (1 s sur desktop, **15 min sur Android**). D'où deux modes de lecture, voir plus bas.
+
+**WebGPU est désactivé volontairement, même là où il est disponible.** Firefox desktop expose `navigator.gpu` depuis la version 141, mais le backend WebGPU d'ONNX Runtime y produit une sortie incohérente : un grésillement continu au lieu de la voix. Le diagnostic (`node tests/kokoro-diagnostic.js q8 cpu`) a montré que le modèle et l'encodage WAV étaient corrects, ce qui isole le backend comme seul responsable.
+
+L'extension force donc `device: "wasm"` + `dtype: "q8"`, la configuration de référence de `kokoro-js`. Le jour où le backend WebGPU sera fiable sur Gecko, seule la fabrique (`TTSEngineFactory`) est à modifier : le moteur reste derrière la même interface `synthesize()`.
+
+### Le runtime ONNX doit être embarqué dans l'extension
+
+Par défaut, `transformers.js` va chercher les binaires WebAssembly d'ONNX Runtime sur jsDelivr. La CSP d'une extension MV3 (`script-src 'self'`) l'interdit : le chargement échoue silencieusement. Les fichiers `ort-wasm-simd-threaded.jsep.{mjs,wasm}` sont donc copiés dans `dist/ort/` au build, et le worker repointe `wasmPaths` dessus :
+
+```js
+env.backends.onnx.wasm.wasmPaths = browser.runtime.getURL("ort/");
+env.backends.onnx.wasm.numThreads = 1; // pas de SharedArrayBuffer sans COOP/COEP
+```
+
+Le manifest doit par ailleurs autoriser explicitement l'exécution WebAssembly :
+
+```json
+"content_security_policy": {
+  "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+}
+```
+
+Conséquence : le dossier `dist/` pèse une vingtaine de mégaoctets même sans le modèle, qui est lui téléchargé à la demande depuis Hugging Face (CORS ouvert, donc aucune `host_permission` nécessaire) puis mis en cache par le navigateur.
+
+### Le son est produit par un onglet, pas par la page de fond
+
+C'est le choix d'architecture qui conditionne toute la lecture en arrière-plan. En Manifest V3, le script de fond est une **event page** : Firefox la suspend après une trentaine de secondes d'inactivité, et throttle les contextes inactifs (1 s sur desktop, **15 min sur Android**, avec déchargement possible). Y héberger l'audio revient à parier sur un maintien en vie artificiel — un minuteur qui appelle une API toutes les 20 secondes, ce que rien ne garantit.
+
+L'exemption documentée (« Firefox does not throttle inactive tabs if the tab contains an `AudioContext` ») porte sur les **onglets**. Le lecteur est donc une véritable page d'extension ouverte dans un onglet : Firefox la traite comme n'importe quel lecteur web qui joue du son, un comportement éprouvé sur Android.
+
+Répartition des rôles :
+
+| Contexte | Rôle |
+| --- | --- |
+| `content-script.js` | Extraction Readability, dans la page de l'article |
+| `background.js` | Coordination seule : extraire, puis acheminer vers le lecteur |
+| `player.html` | Héberge le Service TTS, l'`AudioContext` et la session média |
+| `popup.html` | Télécommande ; l'état vit dans le lecteur |
+
+L'onglet lecteur est ouvert **actif** : l'ouverture suit un geste de l'utilisateur, ce qui évite le blocage de la lecture automatique, et cet écran devient la surface de contrôle — ce qu'on veut sur téléphone, où le popup est étroit. Les préférences passent par `storage`, que le lecteur observe, plutôt que par des relais de messages.
+
+### Deux modes de lecture : progressive ou complète
+
+| Mode | Attente avant le son | Timeline | Sortie |
+| --- | --- | --- | --- |
+| **Progressive** (défaut) | un segment (~2 s) | partielle, grandit | Web Audio |
+| **Complète** | tout l'article | totale, seek possible | `<audio>` + WAV unique |
+
+La lecture progressive repose sur une exemption documentée : « Firefox does not throttle inactive tabs if the tab contains an `AudioContext` ». C'est ce qui permet à la génération de continuer quand la page passe en arrière-plan — sans elle, le throttling Android à 15 minutes couperait la production de son.
+
+Le flux Web Audio est renvoyé vers un élément `<audio>` via un `MediaStreamAudioDestinationNode`, car la session média (contrôles système, écran verrouillé) s'attache à un élément média et non à un `AudioContext`. Le compromis : la barre de progression du lockscreen n'est pas exploitable, la durée totale étant inconnue tant que la génération n'est pas finie.
+
+Le mode progressif n'est tenable que si la synthèse va plus vite que la lecture (**RTF < 1**). Sinon le son se met à trouer : ces retards sont comptés (`underruns`) et affichés, plutôt que de laisser des blancs inexpliqués. Le RTF mesuré est affiché en fin de génération.
+
+### Kokoro ne propose que des voix anglaises
+
+Le modèle Kokoro v1.0 tel qu'exposé par `kokoro-js` ne contient que des voix `en-us` et `en-gb` — aucune voix française. Sur un article non anglophone, le service bascule automatiquement sur la voix du navigateur et l'explique dans le popup, plutôt que de faire lire du français avec un phonémiseur anglais.
+
+### Le PCM est concaténé en un seul fichier
+
+Chaque segment synthétisé donne un `Float32Array` ; tous sont assemblés en **un seul WAV** avant lecture. Un fichier unique (plutôt qu'un blob par segment) donne à `<audio>` une vraie timeline : durée totale, seek, et donc une Media Session complète sur l'écran verrouillé. Les bornes temporelles de chaque segment sont conservées pour suivre la progression et sauter d'un paragraphe à l'autre.
+
+### `browser_specific_settings.gecko.id` est obligatoire
+
+Sans un identifiant d'extension explicite dans le manifest, le test sur Firefox Android échoue. Source classique de blocage.
+
+---
+
+## Feuille de route
+
+- [x] **v0 — Extraction** : bouton qui extrait l'article et l'affiche dans la console (valide Readability).
+- [x] **v1 — Chaîne complète** : lecture via Web Speech API pour entendre un résultat de bout en bout.
+- [x] **v2 — Moteur neuronal local** : Kokoro (ONNX) derrière l'interface `synthesize()`, exécuté dans un worker.
+- [x] **v2.1 — Arrière-plan** : `<audio>` + Media Session, pré-génération, contrôles lockscreen.
+- [ ] **v3 — Optimisation** : quantification du modèle (int8 / fp16), test de modèles mono-voix plus légers.
+- [ ] **Confort** : réglage de la vitesse, choix de la voix, surlignage du passage lu, file de lecture.
+- [ ] **Accélération** : bascule automatique sur WebGPU dès qu'il est disponible sur Firefox Android.
+
+> Ordre volontaire : obtenir un résultat qui _parle_ (même avec une voix médiocre) avant d'attaquer le modèle neuronal — pour garder la motivation et disposer d'un point de comparaison.
+
+---
+
+## Limitations connues
+
+- Fonctionne **uniquement dans le navigateur** (pas dans les autres applications du téléphone).
+- La voix neuronale **ne lit que l'anglais** (voir plus haut) ; le français passe par la voix du navigateur.
+- Sur Firefox Android, la synthèse neuronale a une **latence de génération** au démarrage (CPU / WASM) tant que WebGPU n'est pas disponible.
+- Le modèle neuronal représente un **téléchargement conséquent** (~86 Mo en q8, ~326 Mo en fp32), mis en cache après le premier usage.
+- La **lecture en arrière-plan n'est possible qu'avec le moteur neuronal** : `speechSynthesis` ne produit pas de fichier audio, donc pas de session média.
+- La qualité d'extraction dépend de la structure de la page : les articles bien balisés fonctionnent mieux que les mises en page atypiques.
+
+---
+
+## Compatibilité navigateur
+
+| Navigateur                     | Extensions | Remarque                                                                |
+| ------------------------------ | ---------- | ----------------------------------------------------------------------- |
+| **Firefox pour Android**       | ✅         | Cible principale du projet.                                             |
+| Firefox desktop                | ✅         | Environnement de développement.                                         |
+| Chrome pour Android            | ❌         | N'a jamais pris en charge les extensions, par choix de Google.          |
+| Kiwi Browser                   | ⚠️         | Arrêté en 2025 ; son moteur d'extensions a été repris dans Edge Canary. |
+| Edge Canary / Yandex (Android) | ⚠️         | Support partiel / expérimental.                                         |
+
+La cible assumée est **Firefox pour Android**.
+
+---
+
+## Licence et crédits
+
+- **Licence** : MIT (à confirmer).
+- [`@mozilla/readability`](https://github.com/mozilla/readability) — extraction de contenu (moteur du mode Lecture de Firefox).
+- [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) — modèle de synthèse vocale léger.
+- [`transformers.js`](https://github.com/huggingface/transformers.js) / [`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx) — exécution de modèles ONNX dans le navigateur.
+- [`web-ext`](https://github.com/mozilla/web-ext) — outillage de développement d'extensions Mozilla.
+
+---
+
+_Projet personnel — développeur : Aln._
