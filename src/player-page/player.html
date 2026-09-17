@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auslect — lecteur</title>
+    <link rel="stylesheet" href="player.css" />
+  </head>
+  <body>
+    <main>
+      <h1 id="title">Aucun article</h1>
+      <p id="status">Ouvrez un article, puis lancez la lecture depuis l'icône Auslect.</p>
+
+      <div class="timeline">
+        <progress id="progress" max="100" value="0"></progress>
+        <div class="times">
+          <span id="position">0:00</span>
+          <span id="duration">0:00</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="btn-resume" disabled>Reprendre</button>
+        <button id="btn-pause" disabled>Pause</button>
+        <button id="btn-stop" disabled>Arrêter</button>
+      </div>
+
+      <p id="segment" class="segment"></p>
+      <p id="stats" class="hint" hidden></p>
+      <p class="hint">
+        Gardez cet onglet ouvert : c'est lui qui produit le son. Il peut passer en
+        arrière-plan, la lecture continue.
+      </p>
+    </main>
+    <script type="module" src="player.js"></script>
+  </body>
+</html>

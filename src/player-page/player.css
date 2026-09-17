@@ -1,0 +1,109 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: #faf9f7;
+  color: #1a1a1a;
+}
+
+main {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 24px 18px;
+}
+
+h1 {
+  font-size: 1.15rem;
+  line-height: 1.35;
+  margin: 0 0 6px;
+}
+
+#status {
+  font-size: 0.85rem;
+  color: #555;
+  margin: 0 0 20px;
+  min-height: 1.4em;
+}
+
+.timeline {
+  margin-bottom: 18px;
+}
+
+progress {
+  width: 100%;
+  height: 6px;
+}
+
+.times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: #666;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+/* Cibles larges : cet écran est la surface principale sur téléphone. */
+button {
+  flex: 1;
+  padding: 14px 8px;
+  font-size: 0.9rem;
+  border: 1px solid #c9c6c0;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.segment {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #333;
+  border-left: 3px solid #c9c6c0;
+  padding-left: 10px;
+  min-height: 3em;
+  margin: 0 0 16px;
+}
+
+.hint {
+  font-size: 0.75rem;
+  color: #777;
+  line-height: 1.45;
+  margin: 6px 0 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #1c1b19;
+    color: #ece9e4;
+  }
+  #status,
+  .times {
+    color: #a8a29a;
+  }
+  .segment {
+    color: #d5d1ca;
+    border-left-color: #4a4640;
+  }
+  button {
+    background: #262522;
+    border-color: #4a4640;
+    color: #ece9e4;
+  }
+  .hint {
+    color: #8d8880;
+  }
+}

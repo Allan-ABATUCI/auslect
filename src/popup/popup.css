@@ -1,0 +1,105 @@
+/* Largeur libre plutôt que fixe : sur Android le popup occupe tout l'écran, et
+   une largeur imposée y tasse l'interface dans un coin. */
+body {
+  margin: 0;
+  min-width: 260px;
+  max-width: 100%;
+  font-family: system-ui, sans-serif;
+  color: #1a1a1a;
+}
+
+/* Au-delà de la largeur d'un popup de bureau : on est sur mobile, donc cibles
+   tactiles et texte agrandis. */
+@media (min-width: 400px) {
+  main {
+    padding: 20px 18px;
+  }
+  h1 {
+    font-size: 1.1rem;
+  }
+  #status,
+  .engine {
+    font-size: 0.9rem;
+  }
+  button {
+    padding: 14px 8px;
+    font-size: 0.9rem;
+  }
+  select {
+    font-size: 0.9rem;
+    padding: 8px;
+  }
+  .hint {
+    font-size: 0.8rem;
+  }
+}
+
+main {
+  padding: 12px 14px;
+}
+
+h1 {
+  font-size: 15px;
+  margin: 0 0 8px;
+}
+
+.title {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#status {
+  font-size: 12px;
+  color: #555;
+  min-height: 1.4em;
+  margin: 0 0 8px;
+}
+
+progress {
+  width: 100%;
+  height: 4px;
+  margin-bottom: 10px;
+}
+
+.controls {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+button {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.engine {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+select {
+  flex: 1;
+  font-size: 11px;
+  padding: 3px;
+}
+
+.hint {
+  font-size: 10px;
+  color: #777;
+  margin: 6px 0 0;
+  line-height: 1.35;
+}

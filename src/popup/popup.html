@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Sans viewport, Android rend le popup dans un viewport virtuel large puis
+         le réduit : tout devient illisible. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auslect</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Auslect</h1>
+
+      <p id="title" class="title" hidden></p>
+      <p id="status">Prêt.</p>
+
+      <progress id="progress" max="100" value="0" hidden></progress>
+
+      <div class="controls">
+        <button id="btn-play">Lire</button>
+        <button id="btn-pause" disabled>Pause</button>
+        <button id="btn-resume" disabled>Reprendre</button>
+        <button id="btn-stop" disabled>Arrêter</button>
+      </div>
+
+      <p id="stats" class="hint" hidden></p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
