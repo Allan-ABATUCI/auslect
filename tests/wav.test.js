@@ -2,7 +2,7 @@
 // vérifient l'entête octet par octet et le round-trip d'un signal connu.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { encodeWav, silence } from "../src/lib/wav.js";
+import { encodeWav, silence, toPcm16 } from "../src/lib/wav.js";
 
 const SAMPLE_RATE = 24000;
 
@@ -86,4 +86,26 @@ test("silence() produit la bonne durée de zéros", () => {
   const samples = silence(0.5, SAMPLE_RATE);
   assert.equal(samples.length, SAMPLE_RATE / 2);
   assert.ok(samples.every((value) => value === 0));
+});
+
+test("un morceau deja en 16 bits traverse l'encodeur sans etre requantifie", async () => {
+  // La lecture par lots reencode le meme audio a chaque republication : si
+  // encodeWav requantifiait des Int16 comme du Float32, chaque passage
+  // degraderait un peu plus les minutes deja produites.
+  const float = sine(440, 0.02);
+  const twice = await readBack(encodeWav([toPcm16(float)], SAMPLE_RATE));
+  const once = await readBack(encodeWav([float], SAMPLE_RATE));
+
+  assert.equal(twice.byteLength, once.byteLength);
+  for (let i = 44; i < once.byteLength; i += 2) {
+    assert.equal(twice.getInt16(i, true), once.getInt16(i, true));
+  }
+});
+
+test("morceaux Float32 et Int16 se concatenent dans le meme fichier", () => {
+  // Cas reel du lecteur : segments synthetises en Int16, respirations en Int16,
+  // et un moteur qui rendrait du Float32 doit rester assemblable avec eux.
+  const blob = encodeWav([sine(440, 0.02), silence(0.01, SAMPLE_RATE)], SAMPLE_RATE);
+  const expected = Math.round(0.02 * SAMPLE_RATE) + Math.round(0.01 * SAMPLE_RATE);
+  assert.equal(blob.size, 44 + expected * 2);
 });
