@@ -23,6 +23,10 @@ const els = {
   stats: document.getElementById("stats"),
 };
 
+// L'état pilote la répartition des messages : pendant l'écoute, la génération
+// passe en seconde ligne au lieu d'écraser « Lecture en cours ».
+let currentState = "idle";
+
 const STATE_LABELS = {
   idle: "Prêt.",
   generating: "Génération de l'audio…",
@@ -38,6 +42,7 @@ function formatTime(seconds) {
 }
 
 function applyState(state) {
+  currentState = state;
   els.status.textContent = STATE_LABELS[state] ?? state;
   els.pause.disabled = state !== "playing";
   els.resume.disabled = state !== "paused";
@@ -56,14 +61,28 @@ function render(event) {
 
     case "generation-progress": {
       const eta = event.remainingSeconds > 1 ? ` — ~${formatTime(event.remainingSeconds)} restantes` : "";
-      els.status.textContent = `Génération… ${event.done}/${event.total}${eta}`;
+      const message = `Génération… ${event.done}/${event.total}${eta}`;
+      // Une fois la lecture lancée, la génération continue en fond : elle n'a
+      // plus à s'annoncer comme l'activité principale.
+      if (currentState === "playing" || currentState === "paused") {
+        els.stats.hidden = false;
+        els.stats.textContent = message;
+      } else {
+        els.status.textContent = message;
+      }
       break;
     }
+
+    case "waiting":
+      // La synthèse n'a pas suivi la lecture : c'est audible, autant le dire.
+      els.status.textContent = "La génération n'a pas suivi : reprise dès que la suite est prête…";
+      break;
 
     case "generation-done":
       els.stats.hidden = false;
       els.stats.textContent =
-        `Généré en ${formatTime(event.elapsed)} pour ${formatTime(event.audioSeconds)} d'audio — RTF ${event.rtf.toFixed(2)}` +
+        `Son en ${formatTime(event.timeToFirstAudio)}, généré en ${formatTime(event.elapsed)} ` +
+        `pour ${formatTime(event.audioSeconds)} d'audio — RTF ${event.rtf.toFixed(2)}` +
         (event.underruns ? ` — ${event.underruns} coupure(s)` : "");
       break;
 
@@ -73,7 +92,9 @@ function render(event) {
 
     case "progress":
       els.position.textContent = formatTime(event.position);
-      els.duration.textContent = formatTime(event.duration);
+      // Tant que la génération tourne, la durée affichée est celle du fichier
+      // déjà produit, pas celle de l'article : le « + » l'annonce.
+      els.duration.textContent = formatTime(event.duration) + (event.complete ? "" : " +");
       els.progress.max = Math.max(event.duration, 1);
       els.progress.value = event.position;
       break;

@@ -208,17 +208,23 @@ La suite couvre les trois endroits où une erreur est difficile à diagnostiquer
 | ------------------------ | ------------------------------------------------------------------------------------------------- |
 | `wav.test.js`            | Entête PCM octet par octet, round-trip d'un signal connu, écrêtage des valeurs hors bornes.       |
 | `segmenter.test.js`      | Ordre des blocs, découpage en phrases, titres marqués, blocs vides ignorés.                      |
-| `audio-player.test.js`   | Machine à états : aucun segment sauté ni rejoué après pause/reprise, dans les deux modes de rendu. |
+| `audio-player.test.js`   | Machine à états : aucun segment sauté ni rejoué après pause/reprise, dans les deux modes de rendu. Lecture par lots : le son sort avant la fin de la génération, le fichier s'allonge sans perdre la position, une lecture qui rattrape la génération attend au lieu de terminer l'article. |
+
+Chaque test de la lecture par lots a été validé en y injectant le bug qu'il prétend attraper — retour au « tout générer puis jouer », position non restaurée après l'échange de source, fin de fichier traitée comme fin d'article, garde-fou de republication retiré. Un test qui ne tombe pas sous le bug qu'il vise ne teste rien.
 
 ### Diagnostic audio
 
-Quand le son sort faux, ce script tranche entre les trois causes possibles — modèle, backend d'inférence ou encodage :
+Trois outils de mesure, à lancer hors navigateur :
 
 ```bash
-node tests/kokoro-diagnostic.js q8 cpu
+node tests/piper-bench.js [voix]   # RTF + un WAV écoutable dans diagnostic/
+node tests/piper-profile.js        # part de la phonémisation vs l'inférence
+node tests/batch-sim.js [rtf...]   # ordonnancement de la lecture par lots
 ```
 
-Il génère un échantillon, affiche un verdict basé sur le taux de passages par zéro (une voix tourne autour de 0,02–0,15 ; un bruit blanc approche 0,5) et écrit deux WAV dans `diagnostic/` : celui de notre encodeur et celui de `kokoro-js`. S'ils sonnent pareil, l'encodage est hors de cause.
+`piper-bench` affiche un verdict basé sur le taux de passages par zéro (une voix tourne autour de 0,02–0,20 ; un bruit blanc approche 0,5) : de quoi trancher entre modèle, backend d'inférence et encodage sans avoir à écouter.
+
+`batch-sim` ne sollicite aucun moteur : il rejoue la chronologie d'un chapitre de 369 segments sur horloge virtuelle, pour un RTF donné, et compte les republications du fichier. C'est lui qui a révélé le coût quadratique d'une republication par segment quand la synthèse ne suit pas (voir plus bas).
 
 ## Structure du projet
 
@@ -340,18 +346,25 @@ Répartition des rôles :
 
 L'onglet lecteur est ouvert **actif** : l'ouverture suit un geste de l'utilisateur, ce qui évite le blocage de la lecture automatique, et cet écran devient la surface de contrôle — ce qu'on veut sur téléphone, où le popup est étroit. Les préférences passent par `storage`, que le lecteur observe, plutôt que par des relais de messages.
 
-### Deux modes de lecture : progressive ou complète
+### La lecture par lots : un fichier qui grandit, pas des lots enchaînés
 
-| Mode | Attente avant le son | Timeline | Sortie |
-| --- | --- | --- | --- |
-| **Progressive** (défaut) | un segment (~2 s) | partielle, grandit | Web Audio |
-| **Complète** | tout l'article | totale, seek possible | `<audio>` + WAV unique |
+Attendre la génération complète coûtait **6 minutes de silence** avant le premier mot sur un chapitre de 28 minutes. La génération et la lecture se recouvrent désormais : dès 45 secondes d'audio en réserve, `<audio>` démarre ; le reste est synthétisé pendant l'écoute.
 
-La lecture progressive repose sur une exemption documentée : « Firefox does not throttle inactive tabs if the tab contains an `AudioContext` ». C'est ce qui permet à la génération de continuer quand la page passe en arrière-plan — sans elle, le throttling Android à 15 minutes couperait la production de son.
+La solution évidente — découper l'article en lots indépendants et enchaîner sur `ended` — est précisément celle qu'il ne faut pas prendre ici. Sur Android le JS est gelé écran éteint : chaque frontière de lot exigerait un réveil du code, au pire moment. À la place, **chaque publication réécrit un seul fichier contenant tout ce qui est généré**, et la position de lecture est restaurée à la seconde près. Le moteur générant environ 4,5× plus vite que le temps réel, les publications se concentrent au début, et la dernière contient l'article entier : passé ce point, plus aucun code n'a besoin d'être réveillé.
 
-Le flux Web Audio est renvoyé vers un élément `<audio>` via un `MediaStreamAudioDestinationNode`, car la session média (contrôles système, écran verrouillé) s'attache à un élément média et non à un `AudioContext`. Le compromis : la barre de progression du lockscreen n'est pas exploitable, la durée totale étant inconnue tant que la génération n'est pas finie.
+Mesuré par `node tests/batch-sim.js`, sur le profil du chapitre réel (369 segments, 27 min d'audio) :
 
-Le mode progressif n'est tenable que si la synthèse va plus vite que la lecture (**RTF < 1**). Sinon le son se met à trouer : ces retards sont comptés (`underruns`) et affichés, plutôt que de laisser des blancs inexpliqués. Le RTF mesuré est affiché en fin de génération.
+| RTF | Attente avant le son | Publications | Autonome à partir de | Écoute sans JS |
+| --- | --- | --- | --- | --- |
+| 0,05 (natif) | 2 s | 3 | 1:21 | 25:48 |
+| **0,22 (WASM, émulateur)** | **10 s** | **4** | **5:58** | **21:19** |
+| 1,20 (appareil trop lent) | 53 s | 15 | — | — |
+
+Une publication réécrit **tout** le fichier, pas seulement la nouveauté. La première version republiait dès qu'un segment était disponible : à RTF 1,2 la simulation a compté **331 publications**, soit un coût quadratique sur l'appareil qui peinait déjà. Une publication n'a donc lieu que si la nouveauté atteint `max(30 s, 25 % de l'existant)` — croissance géométrique, nombre de publications borné quel que soit le RTF : 331 → 15.
+
+Quand la synthèse ne suit pas la lecture (**RTF > 1**), le son s'arrête en fin de fichier au lieu de terminer l'article : le lecteur se reconstitue une réserve avant de repartir, comme un lecteur vidéo. Ces coupures sont comptées (`underruns`) et affichées, plutôt que de laisser des blancs inexpliqués.
+
+Les échanges de fichier sont déclenchés par `timeupdate`, **avant** que la tête de lecture n'atteigne la fin, et non sur `ended` : l'élément `<audio>` ne s'arrête jamais, donc la notification média Android ne perd pas sa session.
 
 ### Kokoro ne propose que des voix anglaises
 
@@ -359,7 +372,7 @@ Le modèle Kokoro v1.0 tel qu'exposé par `kokoro-js` ne contient que des voix `
 
 ### Le PCM est concaténé en un seul fichier
 
-Chaque segment synthétisé donne un `Float32Array` ; tous sont assemblés en **un seul WAV** avant lecture. Un fichier unique (plutôt qu'un blob par segment) donne à `<audio>` une vraie timeline : durée totale, seek, et donc une Media Session complète sur l'écran verrouillé. Les bornes temporelles de chaque segment sont conservées pour suivre la progression et sauter d'un paragraphe à l'autre.
+Chaque segment synthétisé donne un `Float32Array`, immédiatement quantifié en PCM 16 bits et conservé sous cette forme : le fichier étant réécrit à chaque publication, garder du Float32 doublerait la mémoire et requantifierait à chaque passage les minutes déjà produites. Tous les morceaux sont assemblés en **un seul WAV**. Un fichier unique (plutôt qu'un blob par segment) donne à `<audio>` une vraie timeline : durée totale, seek, et donc une Media Session complète sur l'écran verrouillé. Les bornes temporelles de chaque segment sont conservées pour suivre la progression et sauter d'un paragraphe à l'autre.
 
 ### `browser_specific_settings.gecko.id` est obligatoire
 
@@ -373,6 +386,8 @@ Sans un identifiant d'extension explicite dans le manifest, le test sur Firefox 
 - [x] **v1 — Chaîne complète** : lecture via Web Speech API pour entendre un résultat de bout en bout.
 - [x] **v2 — Moteur neuronal local** : Kokoro (ONNX) derrière l'interface `synthesize()`, exécuté dans un worker.
 - [x] **v2.1 — Arrière-plan** : `<audio>` + Media Session, pré-génération, contrôles lockscreen.
+- [x] **v2.2 — Lecture par lots** : le son sort après ~10 s au lieu de ~6 min, sans sacrifier l'autonomie de la session média.
+- [ ] **v3 — Français** : `piper_phonemize` embarqué (le `phonemizer` actuel n'a que les données eSpeak anglaises).
 - [ ] **v3 — Optimisation** : quantification du modèle (int8 / fp16), test de modèles mono-voix plus légers.
 - [ ] **Confort** : réglage de la vitesse, choix de la voix, surlignage du passage lu, file de lecture.
 - [ ] **Accélération** : bascule automatique sur WebGPU dès qu'il est disponible sur Firefox Android.
@@ -385,7 +400,8 @@ Sans un identifiant d'extension explicite dans le manifest, le test sur Firefox 
 
 - Fonctionne **uniquement dans le navigateur** (pas dans les autres applications du téléphone).
 - La voix neuronale **ne lit que l'anglais** (voir plus haut) ; le français passe par la voix du navigateur.
-- Sur Firefox Android, la synthèse neuronale a une **latence de génération** au démarrage (CPU / WASM) tant que WebGPU n'est pas disponible.
+- Sur Firefox Android, la synthèse neuronale a une **latence de génération** au démarrage (~10 s pour constituer la réserve initiale) tant que WebGPU n'est pas disponible.
+- Pendant la génération de fond, la durée affichée est celle du fichier déjà produit, pas celle de l'article : l'interface la marque d'un `+` tant qu'elle n'est pas définitive.
 - Le modèle neuronal représente un **téléchargement conséquent** (~86 Mo en q8, ~326 Mo en fp32), mis en cache après le premier usage.
 - La **lecture en arrière-plan n'est possible qu'avec le moteur neuronal** : `speechSynthesis` ne produit pas de fichier audio, donc pas de session média.
 - La qualité d'extraction dépend de la structure de la page : les articles bien balisés fonctionnent mieux que les mises en page atypiques.

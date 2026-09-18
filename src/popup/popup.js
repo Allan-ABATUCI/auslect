@@ -76,22 +76,37 @@ browser.runtime.onMessage.addListener((message) => {
       break;
 
     case "generation-progress": {
+      // Pendant l'écoute, la barre suit la génération de fond mais la ligne
+      // d'état reste au temps de lecture (voir "progress").
+      if (currentState === "playing" || currentState === "paused") {
+        els.progress.hidden = false;
+        els.progress.max = event.total;
+        els.progress.value = event.done;
+        break;
+      }
       const eta = event.remainingSeconds > 1 ? ` — ~${formatTime(event.remainingSeconds)} restantes` : "";
       showProgress(event.done, event.total, `Génération… ${event.done}/${event.total}${eta}`);
       break;
     }
 
+    case "waiting":
+      els.status.textContent = "La génération n'a pas suivi : reprise imminente…";
+      break;
+
     case "generation-done":
       els.stats.hidden = false;
+      els.progress.hidden = true;
       els.stats.textContent =
-        `Généré en ${formatTime(event.elapsed)} pour ${formatTime(event.audioSeconds)} d'audio — RTF ${event.rtf.toFixed(2)}` +
+        `Son en ${formatTime(event.timeToFirstAudio)}, généré en ${formatTime(event.elapsed)} ` +
+        `pour ${formatTime(event.audioSeconds)} d'audio — RTF ${event.rtf.toFixed(2)}` +
         // Des coupures signifient que la synthèse n'a pas suivi la lecture.
         (event.underruns ? ` — ${event.underruns} coupure(s)` : "");
       break;
 
     case "progress":
       if (currentState === "playing") {
-        els.status.textContent = `${formatTime(event.position)} / ${formatTime(event.duration)}`;
+        els.status.textContent =
+          `${formatTime(event.position)} / ${formatTime(event.duration)}` + (event.complete ? "" : " +");
       }
       break;
 
