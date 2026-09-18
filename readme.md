@@ -57,41 +57,41 @@ Une extension de navigateur, elle, s'exécute _dans le contexte de la page_ : el
 Le traitement est un pipeline vertical : le texte entre en haut, l'audio sort en bas. Chaque étage est indépendant du suivant, et un seul étage — le moteur — change quand on fait évoluer la synthèse.
 
 ```
-┌─────────────────────────────────────────┐
+┌──────────────────────────────────────────┐
 │  Content script  (dans la page)          │
 │  Readability → texte propre de l'article │
-└───────────────────┬─────────────────────┘
+└───────────────────┬──────────────────────┘
                     │  { titre, texte, html }
                     ▼
-┌─────────────────────────────────────────┐
-│  Service TTS  (Facade)                    │
-│  Une API unique : load / speak / pause    │
-└───────────────────┬─────────────────────┘
+┌──────────────────────────────────────────┐
+│  Service TTS  (Facade)                   │
+│  Une API unique : load / speak / pause   │
+└───────────────────┬──────────────────────┘
                     │
                     ▼
-┌─────────────────────────────────────────┐
-│  Fabrique de moteur  (Factory)            │
-│  Détecte les capacités, choisit le moteur │
-└───────────────────┬─────────────────────┘
+┌──────────────────────────────────────────┐
+│  Fabrique de moteur  (Factory)           │
+│  Instancie le moteur demandé             │
+└───────────────────┬──────────────────────┘
                     │
                     ▼
-┌─────────────────────────────────────────┐
-│  Moteur ONNX  (Strategy + Adapter)        │
-│  Kokoro / Piper / Web Speech (secours)    │
-│  texte → Blob audio                       │
-└───────────────────┬─────────────────────┘
+┌──────────────────────────────────────────┐
+│  Moteur ONNX  (Strategy + Adapter)       │
+│  Piper (VITS) / Web Speech (secours)     │
+│  texte → Blob audio                      │
+└───────────────────┬──────────────────────┘
                     │  segments audio
                     ▼
-┌─────────────────────────────────────────┐
-│  Lecteur audio  (State machine)           │
-│  idle → generating → playing → paused     │
-└───────────────────┬─────────────────────┘
+┌──────────────────────────────────────────┐
+│  Lecteur audio  (State machine)          │
+│  idle → generating → playing → paused    │
+└───────────────────┬──────────────────────┘
                     │
                     ▼
-┌─────────────────────────────────────────┐
-│  <audio> + Media Session API              │
-│  Lecture en arrière-plan + lockscreen     │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  <audio> + Media Session API             │
+│  Lecture en arrière-plan + lockscreen    │
+└──────────────────────────────────────────┘
 ```
 
 ### Flux de données
@@ -100,7 +100,7 @@ Le traitement est un pipeline vertical : le texte entre en haut, l'audio sort en
 2. Le **content script** clone le DOM, le passe à Readability, et renvoie le contenu nettoyé.
 3. Le contenu est **segmenté** en blocs (paragraphes, titres) puis en phrases.
 4. Le **Service TTS** demande au moteur courant de synthétiser les segments en audio.
-5. Le **lecteur** enchaîne les segments audio dans un élément `<audio>` et publie l'état à la Media Session.
+5. Le **lecteur** assemble les segments en un fichier audio unique, le donne à un élément `<audio>` et publie l'état à la Media Session.
 6. Les événements de lecture (début de segment, progression, fin) remontent à l'interface pour le surlignage et les boutons.
 
 ---
@@ -112,12 +112,12 @@ Les patterns ne sont pas décoratifs : chacun répond à une contrainte concrèt
 | Pattern       | Où                             | Pourquoi                                                                                                                                                  |
 | ------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Strategy**  | `TTSEngine` + moteurs concrets | Rendre le moteur de synthèse interchangeable sans toucher au reste. C'est ce qui permet de commencer avec un modèle puis de le remplacer par un meilleur. |
-| **Adapter**   | Chaque moteur concret          | `transformers.js`, `sherpa-onnx` et `speechSynthesis` ont des API incompatibles ; chaque moteur les adapte à l'interface commune `synthesize()`.          |
-| **Factory**   | `TTSEngineFactory`             | Instancier le bon moteur au démarrage selon les capacités détectées (WebGPU dispo ? sinon WASM ; échec ? repli Web Speech).                               |
+| **Adapter**   | Chaque moteur concret          | `onnxruntime-web` et `speechSynthesis` ont des API incompatibles — l'un rend du PCM, l'autre parle tout seul ; chaque moteur les adapte à l'interface commune.  |
+| **Factory**   | `TTSEngineFactory`             | Instancier le bon moteur selon ce qui est possible ici et maintenant : langue supportée ? modèle chargeable ? sinon repli sur la voix du navigateur.       |
 | **Facade**    | `TTSService`                   | Cacher toute la complexité (choix du moteur, chargement du modèle, découpage, cache) derrière quelques méthodes simples.                                  |
 | **State**     | `AudioPlayer`                  | Rendre chaque action légale ou impossible selon l'état courant, au lieu d'empiler des conditions ingérables. Règle les bugs de pause / reprise.           |
 | **Observer**  | Messagerie de l'extension      | Le lecteur émet des événements auxquels s'abonnent l'interface et la Media Session. Câblage fourni nativement par le `runtime messaging`.                 |
-| **Singleton** | `TTSService` (background)      | Le modèle ONNX (80–300 Mo) ne doit exister qu'une seule fois en mémoire, partagé par tous les onglets.                                                    |
+| **Singleton** | `TTSService` (onglet lecteur)  | Le modèle ONNX (~63 Mo) ne doit être chargé qu'une fois, et la session de synthèse survivre d'un article au suivant.                                       |
 
 Principe directeur : **seul l'étage « Moteur » change** quand la synthèse évolue. Extraction, segmentation, machine à états, lecture et Media Session sont agnostiques du modèle.
 
@@ -131,7 +131,7 @@ Principe directeur : **seul l'étage « Moteur » change** quand la synthèse é
 | Plateforme            | Extension WebExtension, Manifest V3                                   |
 | Extraction de contenu | [`@mozilla/readability`](https://github.com/mozilla/readability)      |
 | Synthèse (v1)         | Web Speech API (`speechSynthesis`), intégrée au navigateur            |
-| Synthèse (v2)         | Modèle ONNX local via `transformers.js` ou `sherpa-onnx` (ex. Kokoro) |
+| Synthèse (v2)         | Piper (VITS) en ONNX via `onnxruntime-web`, phonèmes par `phonemizer`  |
 | Lecture arrière-plan  | Élément `<audio>` + Media Session API                                 |
 | Bundler               | esbuild                                                               |
 | Outil de dev          | [`web-ext`](https://github.com/mozilla/web-ext) (officiel Mozilla)    |
@@ -252,9 +252,9 @@ auslect/
 │   │   ├── TTSService.js        # Point d'entrée unique (Facade + Singleton)
 │   │   ├── engines/
 │   │   │   ├── WebSpeechEngine.js  # mode SPEAK
-│   │   │   └── KokoroEngine.js     # mode SYNTHESIZE (pilote le worker)
+│   │   │   └── PiperEngine.js      # mode SYNTHESIZE (pilote le worker)
 │   │   └── workers/
-│   │       └── kokoro-worker.js    # Inférence ONNX isolée du thread principal
+│   │       └── piper-worker.js     # Inférence ONNX isolée du thread principal
 │   ├── player/
 │   │   ├── AudioPlayer.js       # Machine à états + enchaînement audio
 │   │   └── mediaSession.js      # Contrôles système / écran verrouillé
@@ -304,20 +304,22 @@ Pour que le système respecte la lecture (écran éteint, contrôles sur le lock
 
 Au moment d'écrire ces lignes (septembre 2026), WebGPU est disponible sur Firefox desktop (Windows, macOS) mais **pas encore sur Firefox Android** : le support est en développement, visé par Mozilla pour fin 2026. L'inférence du modèle tourne donc en **WebAssembly (CPU)**, ce qui est plus lent.
 
-Conséquence sur l'architecture : la génération est lente, et Firefox throttle les minuteurs des onglets inactifs (1 s sur desktop, **15 min sur Android**). D'où deux modes de lecture, voir plus bas.
+Conséquence sur l'architecture : la génération est lente, et Firefox throttle les minuteurs des onglets inactifs (1 s sur desktop, **15 min sur Android**). D'où la lecture par lots, voir plus bas.
 
-**WebGPU est désactivé volontairement, même là où il est disponible.** Firefox desktop expose `navigator.gpu` depuis la version 141, mais le backend WebGPU d'ONNX Runtime y produit une sortie incohérente : un grésillement continu au lieu de la voix. Le diagnostic (`node tests/kokoro-diagnostic.js q8 cpu`) a montré que le modèle et l'encodage WAV étaient corrects, ce qui isole le backend comme seul responsable.
+**WebGPU est désactivé volontairement, même là où il est disponible.** Firefox desktop expose `navigator.gpu` depuis la version 141, mais le backend WebGPU d'ONNX Runtime y produit une sortie incohérente : un grésillement continu au lieu de la voix. Le banc (`node tests/piper-bench.js`) a montré que le modèle et l'encodage WAV étaient corrects, ce qui isole le backend comme seul responsable. Un audio qui grésille en continu vient de là, pas du modèle.
 
-L'extension force donc `device: "wasm"` + `dtype: "q8"`, la configuration de référence de `kokoro-js`. Le jour où le backend WebGPU sera fiable sur Gecko, seule la fabrique (`TTSEngineFactory`) est à modifier : le moteur reste derrière la même interface `synthesize()`.
+Le build ne copie donc que la variante **sans JSEP** du runtime : embarquer le support WebGPU coûterait 7 Mo pour du code jamais exécuté. Le jour où ce backend sera fiable sur Gecko, ce sont `build.js` et le worker qui changent — le moteur reste derrière la même interface `synthesize()`.
 
 ### Le runtime ONNX doit être embarqué dans l'extension
 
-Par défaut, `transformers.js` va chercher les binaires WebAssembly d'ONNX Runtime sur jsDelivr. La CSP d'une extension MV3 (`script-src 'self'`) l'interdit : le chargement échoue silencieusement. Les fichiers `ort-wasm-simd-threaded.jsep.{mjs,wasm}` sont donc copiés dans `dist/ort/` au build, et le worker repointe `wasmPaths` dessus :
+Par défaut, `onnxruntime-web` va chercher ses binaires WebAssembly sur un CDN. La CSP d'une extension MV3 (`script-src 'self'`) l'interdit : le chargement échoue silencieusement. Les fichiers `ort-wasm-simd-threaded.{mjs,wasm}` sont donc copiés dans `dist/ort/` au build, et le worker repointe `wasmPaths` dessus :
 
 ```js
-env.backends.onnx.wasm.wasmPaths = browser.runtime.getURL("ort/");
-env.backends.onnx.wasm.numThreads = 1; // pas de SharedArrayBuffer sans COOP/COEP
+ort.env.wasm.wasmPaths = wasmPath; // browser.runtime.getURL("ort/")
+ort.env.wasm.numThreads = 1; // pas de SharedArrayBuffer sans COOP/COEP
 ```
+
+Le manifest doit aussi autoriser `wasm-unsafe-eval` dans sa CSP, sans quoi rien ne s'instancie.
 
 Le manifest doit par ailleurs autoriser explicitement l'exécution WebAssembly :
 
@@ -333,7 +335,7 @@ Conséquence : le dossier `dist/` pèse une vingtaine de mégaoctets même sans 
 
 C'est le choix d'architecture qui conditionne toute la lecture en arrière-plan. En Manifest V3, le script de fond est une **event page** : Firefox la suspend après une trentaine de secondes d'inactivité, et throttle les contextes inactifs (1 s sur desktop, **15 min sur Android**, avec déchargement possible). Y héberger l'audio revient à parier sur un maintien en vie artificiel — un minuteur qui appelle une API toutes les 20 secondes, ce que rien ne garantit.
 
-L'exemption documentée (« Firefox does not throttle inactive tabs if the tab contains an `AudioContext` ») porte sur les **onglets**. Le lecteur est donc une véritable page d'extension ouverte dans un onglet : Firefox la traite comme n'importe quel lecteur web qui joue du son, un comportement éprouvé sur Android.
+Un onglet qui joue du son, lui, échappe à ce traitement : Firefox le considère comme n'importe quel lecteur web. Le lecteur est donc une véritable page d'extension ouverte dans un onglet — comportement vérifié sur Firefox Android 158, notification média comprise.
 
 Répartition des rôles :
 
@@ -341,7 +343,7 @@ Répartition des rôles :
 | --- | --- |
 | `content-script.js` | Extraction Readability, dans la page de l'article |
 | `background.js` | Coordination seule : extraire, puis acheminer vers le lecteur |
-| `player.html` | Héberge le Service TTS, l'`AudioContext` et la session média |
+| `player.html` | Héberge le Service TTS, l'élément `<audio>` et la session média |
 | `popup.html` | Télécommande ; l'état vit dans le lecteur |
 
 L'onglet lecteur est ouvert **actif** : l'ouverture suit un geste de l'utilisateur, ce qui évite le blocage de la lecture automatique, et cet écran devient la surface de contrôle — ce qu'on veut sur téléphone, où le popup est étroit. Les préférences passent par `storage`, que le lecteur observe, plutôt que par des relais de messages.
@@ -366,9 +368,11 @@ Quand la synthèse ne suit pas la lecture (**RTF > 1**), le son s'arrête en fin
 
 Les échanges de fichier sont déclenchés par `timeupdate`, **avant** que la tête de lecture n'atteigne la fin, et non sur `ended` : l'élément `<audio>` ne s'arrête jamais, donc la notification média Android ne perd pas sa session.
 
-### Kokoro ne propose que des voix anglaises
+### C'est le phonémiseur, pas le modèle, qui limite à l'anglais
 
-Le modèle Kokoro v1.0 tel qu'exposé par `kokoro-js` ne contient que des voix `en-us` et `en-gb` — aucune voix française. Sur un article non anglophone, le service bascule automatiquement sur la voix du navigateur et l'explique dans le popup, plutôt que de faire lire du français avec un phonémiseur anglais.
+Piper propose des voix françaises, mais la chaîne s'arrête avant : `phonemizer`, embarqué ici, ne contient que les données eSpeak anglaises. `PiperEngine.supportedLanguages` vaut donc `["en"]`, et sur un article non anglophone le service bascule sur la voix du navigateur en l'expliquant dans le popup — plutôt que de faire lire du français par un phonémiseur anglais.
+
+Le français demanderait `piper_phonemize` (`.data` de 18,1 Mo + `.wasm` de 0,6 Mo). Son `locateFile` étant configurable, il s'embarque comme l'a été le runtime ONNX.
 
 ### Le PCM est concaténé en un seul fichier
 
@@ -384,7 +388,7 @@ Sans un identifiant d'extension explicite dans le manifest, le test sur Firefox 
 
 - [x] **v0 — Extraction** : bouton qui extrait l'article et l'affiche dans la console (valide Readability).
 - [x] **v1 — Chaîne complète** : lecture via Web Speech API pour entendre un résultat de bout en bout.
-- [x] **v2 — Moteur neuronal local** : Kokoro (ONNX) derrière l'interface `synthesize()`, exécuté dans un worker.
+- [x] **v2 — Moteur neuronal local** : Piper (VITS, ONNX) derrière l'interface `synthesize()`, exécuté dans un worker.
 - [x] **v2.1 — Arrière-plan** : `<audio>` + Media Session, pré-génération, contrôles lockscreen.
 - [x] **v2.2 — Lecture par lots** : le son sort après ~10 s au lieu de ~6 min, sans sacrifier l'autonomie de la session média.
 - [ ] **v3 — Français** : `piper_phonemize` embarqué (le `phonemizer` actuel n'a que les données eSpeak anglaises).
@@ -402,7 +406,7 @@ Sans un identifiant d'extension explicite dans le manifest, le test sur Firefox 
 - La voix neuronale **ne lit que l'anglais** (voir plus haut) ; le français passe par la voix du navigateur.
 - Sur Firefox Android, la synthèse neuronale a une **latence de génération** au démarrage (~10 s pour constituer la réserve initiale) tant que WebGPU n'est pas disponible.
 - Pendant la génération de fond, la durée affichée est celle du fichier déjà produit, pas celle de l'article : l'interface la marque d'un `+` tant qu'elle n'est pas définitive.
-- Le modèle neuronal représente un **téléchargement conséquent** (~86 Mo en q8, ~326 Mo en fp32), mis en cache après le premier usage.
+- Le modèle neuronal représente un **téléchargement conséquent** (~63 Mo pour `en_US-lessac-medium`), mis en cache après le premier usage.
 - La **lecture en arrière-plan n'est possible qu'avec le moteur neuronal** : `speechSynthesis` ne produit pas de fichier audio, donc pas de session média.
 - La qualité d'extraction dépend de la structure de la page : les articles bien balisés fonctionnent mieux que les mises en page atypiques.
 
@@ -426,8 +430,9 @@ La cible assumée est **Firefox pour Android**.
 
 - **Licence** : MIT (à confirmer).
 - [`@mozilla/readability`](https://github.com/mozilla/readability) — extraction de contenu (moteur du mode Lecture de Firefox).
-- [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) — modèle de synthèse vocale léger.
-- [`transformers.js`](https://github.com/huggingface/transformers.js) / [`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx) — exécution de modèles ONNX dans le navigateur.
+- [Piper](https://github.com/rhasspy/piper) — modèles de synthèse vocale VITS ; les voix sont servies par [`rhasspy/piper-voices`](https://huggingface.co/rhasspy/piper-voices).
+- [`onnxruntime-web`](https://github.com/microsoft/onnxruntime) — exécution de modèles ONNX dans le navigateur.
+- [`phonemizer`](https://github.com/xenova/phonemizer.js) — eSpeak compilé en WebAssembly, pour les phonèmes IPA.
 - [`web-ext`](https://github.com/mozilla/web-ext) — outillage de développement d'extensions Mozilla.
 
 ---
