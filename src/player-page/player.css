@@ -68,6 +68,30 @@ button:disabled {
   opacity: 0.45;
 }
 
+.settings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+/* Même gabarit tactile que les boutons : cet écran se pilote au pouce. */
+select {
+  padding: 12px 10px;
+  font-size: 0.9rem;
+  border: 1px solid #c9c6c0;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+}
+
+select:disabled {
+  opacity: 0.45;
+}
+
 .segment {
   font-size: 0.9rem;
   line-height: 1.5;
@@ -91,8 +115,14 @@ button:disabled {
     color: #ece9e4;
   }
   #status,
-  .times {
+  .times,
+  .settings {
     color: #a8a29a;
+  }
+  select {
+    background: #262522;
+    border-color: #4a4640;
+    color: #ece9e4;
   }
   .segment {
     color: #d5d1ca;

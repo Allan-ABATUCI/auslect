@@ -47,6 +47,7 @@ Une extension de navigateur, elle, s'exécute _dans le contexte de la page_ : el
 - **Lecture en arrière-plan** — le son ne s'interrompt pas quand l'écran s'éteint ou que Firefox passe en tâche de fond.
 - **Contrôles sur l'écran de verrouillage** — play / pause / titre de l'article via la Media Session API, comme une application audio.
 - **Pause / reprise fiables** — gestion par segments plutôt que par le `pause()` natif (notoirement instable sur mobile).
+- **Vitesse de lecture réglable** — 1× à 1,5× ; au-delà du confort, 1,25× retire ~20 % au temps de génération.
 - **Moteur de synthèse remplaçable** — synthèse intégrée du navigateur ou modèle neuronal local, sans changer le reste du code.
 - **100 % local** (à terme) — aucune donnée ni URL envoyée à un serveur externe.
 
@@ -346,7 +347,7 @@ Répartition des rôles :
 | `player.html` | Héberge le Service TTS, l'élément `<audio>` et la session média |
 | `popup.html` | Télécommande ; l'état vit dans le lecteur |
 
-L'onglet lecteur est ouvert **actif** : l'ouverture suit un geste de l'utilisateur, ce qui évite le blocage de la lecture automatique, et cet écran devient la surface de contrôle — ce qu'on veut sur téléphone, où le popup est étroit. Les préférences passent par `storage`, que le lecteur observe, plutôt que par des relais de messages.
+L'onglet lecteur est ouvert **actif** : l'ouverture suit un geste de l'utilisateur, ce qui évite le blocage de la lecture automatique, et cet écran devient la surface de contrôle — ce qu'on veut sur téléphone, où le popup est étroit. La vitesse de lecture se règle sur cet écran et se conserve dans le `localStorage` de la page d'extension — une permission `storage` de plus pour un seul nombre ne se justifiait pas.
 
 ### La lecture par lots : un fichier qui grandit, pas des lots enchaînés
 
@@ -367,6 +368,8 @@ Une publication réécrit **tout** le fichier, pas seulement la nouveauté. La p
 Quand la synthèse ne suit pas la lecture (**RTF > 1**), le son s'arrête en fin de fichier au lieu de terminer l'article : le lecteur se reconstitue une réserve avant de repartir, comme un lecteur vidéo. Ces coupures sont comptées (`underruns`) et affichées, plutôt que de laisser des blancs inexpliqués.
 
 Les échanges de fichier sont déclenchés par `timeupdate`, **avant** que la tête de lecture n'atteigne la fin, et non sur `ended` : l'élément `<audio>` ne s'arrête jamais, donc la notification média Android ne perd pas sa session.
+
+La vitesse, elle, est figée dans l'audio au moment de le synthétiser (le worker divise `length_scale` par la valeur demandée) : la changer en cours de lecture imposerait de tout regénérer. La commande est donc désactivée tant qu'un article est en cours, et s'applique au suivant.
 
 ### C'est le phonémiseur, pas le modèle, qui limite à l'anglais
 
@@ -393,7 +396,8 @@ Sans un identifiant d'extension explicite dans le manifest, le test sur Firefox 
 - [x] **v2.2 — Lecture par lots** : le son sort après ~10 s au lieu de ~6 min, sans sacrifier l'autonomie de la session média.
 - [ ] **v3 — Français** : `piper_phonemize` embarqué (le `phonemizer` actuel n'a que les données eSpeak anglaises).
 - [ ] **v3 — Optimisation** : quantification du modèle (int8 / fp16), test de modèles mono-voix plus légers.
-- [ ] **Confort** : réglage de la vitesse, choix de la voix, surlignage du passage lu, file de lecture.
+- [x] **Confort — vitesse** : réglable sur l'écran du lecteur, conservée d'un article au suivant.
+- [ ] **Confort** : choix de la voix, surlignage du passage lu, file de lecture.
 - [ ] **Accélération** : bascule automatique sur WebGPU dès qu'il est disponible sur Firefox Android.
 
 > Ordre volontaire : obtenir un résultat qui _parle_ (même avec une voix médiocre) avant d'attaquer le modèle neuronal — pour garder la motivation et disposer d'un point de comparaison.

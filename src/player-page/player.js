@@ -21,7 +21,30 @@ const els = {
   stop: document.getElementById("btn-stop"),
   segment: document.getElementById("segment"),
   stats: document.getElementById("stats"),
+  speed: document.getElementById("speed"),
 };
+
+// Vitesse de parole, appliquée à la génération. Conservée dans le localStorage
+// de la page d'extension plutôt que dans browser.storage : l'origine
+// moz-extension:// est stable, et demander une permission de plus pour un seul
+// nombre ne se justifie pas. Toute lecture ou écriture peut échouer (fenêtre
+// privée, données de site bloquées), d'où les try/catch.
+const SPEED_KEY = "auslect.speed";
+const DEFAULT_SPEED = 1;
+
+function storedSpeed() {
+  try {
+    const value = Number(localStorage.getItem(SPEED_KEY));
+    return Number.isFinite(value) && value > 0 ? value : DEFAULT_SPEED;
+  } catch {
+    return DEFAULT_SPEED;
+  }
+}
+
+function currentSpeed() {
+  const value = Number(els.speed.value);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_SPEED;
+}
 
 // L'état pilote la répartition des messages : pendant l'écoute, la génération
 // passe en seconde ligne au lieu d'écraser « Lecture en cours ».
@@ -47,6 +70,9 @@ function applyState(state) {
   els.pause.disabled = state !== "playing";
   els.resume.disabled = state !== "paused";
   els.stop.disabled = state === "idle";
+  // La vitesse est figée dans l'audio déjà synthétisé : la changer en cours de
+  // route imposerait de tout regénérer. Elle s'applique à l'article suivant.
+  els.speed.disabled = state !== "idle" && state !== "ended";
 }
 
 function render(event) {
@@ -118,6 +144,16 @@ ttsService.onEvent((event) => {
   browser.runtime.sendMessage({ type: "PLAYER_EVENT", event }).catch(() => {});
 });
 
+els.speed.value = String(storedSpeed());
+if (!els.speed.value) els.speed.value = String(DEFAULT_SPEED); // valeur stockée hors liste
+els.speed.addEventListener("change", () => {
+  try {
+    localStorage.setItem(SPEED_KEY, els.speed.value);
+  } catch {
+    // Préférence non conservée : sans conséquence sur la lecture en cours.
+  }
+});
+
 els.pause.addEventListener("click", () => ttsService.pause());
 els.resume.addEventListener("click", () => ttsService.resume());
 els.stop.addEventListener("click", () => ttsService.stop());
@@ -143,7 +179,11 @@ async function loadPendingArticle() {
   }
 
   try {
-    await ttsService.load(segments, { lang: article.lang, title: article.title });
+    await ttsService.load(segments, {
+      lang: article.lang,
+      title: article.title,
+      speed: currentSpeed(),
+    });
     await ttsService.speak();
   } catch (error) {
     els.status.textContent = `Erreur : ${String(error?.message ?? error)}`;

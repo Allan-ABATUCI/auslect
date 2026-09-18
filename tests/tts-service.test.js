@@ -11,6 +11,7 @@ import { TTSEngine, ENGINE_MODE } from "../src/tts/TTSEngine.js";
 class FakeEngine extends TTSEngine {
   initCalls = 0;
   spoken = [];
+  spokenOptions = [];
 
   constructor(id, { languages = null, failInit = false } = {}) {
     super();
@@ -41,9 +42,10 @@ class FakeEngine extends TTSEngine {
     if (this.failInit) throw new Error("modèle indisponible");
   }
 
-  speak(text, { onEnd }) {
+  speak(text, options) {
     this.spoken.push(text);
-    this.onEnd = onEnd;
+    this.spokenOptions.push(options);
+    this.onEnd = options.onEnd;
   }
 
   stop() {}
@@ -99,9 +101,10 @@ test("un article anglais utilise bien le moteur neuronal demandé", async () => 
 
   assert.equal(service.getSnapshot().activeEngineId, ENGINE_IDS.PIPER);
   assert.equal(factory.last(ENGINE_IDS.PIPER).initCalls, 1);
-  assert.deepEqual(
-    events.filter((e) => e.type === "engine-change").map((e) => e.engineId),
-    [ENGINE_IDS.PIPER],
+  assert.equal(
+    events.filter((e) => e.type === "engine-fallback").length,
+    0,
+    "aucun repli ne doit être annoncé quand le moteur demandé convient",
   );
 });
 
@@ -185,7 +188,10 @@ test("les événements du lecteur remontent à travers la façade", async () => 
   assert.ok(states.includes("playing"), "l'UI doit voir passer les changements d'état");
 });
 
-test("l'instantané décrit ce que l'UI doit afficher", async () => {
+test("l'instantané ne contient que ce qui est réellement lu", async () => {
+  // Le popup n'affiche que le titre et l'état ; activeEngineId reste le seul
+  // point d'observation de l'arbitrage des replis. Le deepEqual est ce qui
+  // empêchera l'instantané de se remettre à charrier des champs sans lecteur.
   const { service } = makeService();
   service.setPreferredEngine(ENGINE_IDS.PIPER);
 
@@ -193,10 +199,27 @@ test("l'instantané décrit ce que l'UI doit afficher", async () => {
 
   assert.deepEqual(service.getSnapshot(), {
     state: "idle",
-    preferredEngineId: ENGINE_IDS.PIPER,
     activeEngineId: ENGINE_IDS.WEB_SPEECH,
     title: "Mon article",
-    index: 0,
-    total: 1,
   });
+});
+
+test("la vitesse demandée traverse la façade jusqu'au moteur", async () => {
+  const { service, factory } = makeService();
+
+  await service.load(segments, { lang: "fr", speed: 1.25 });
+  await service.speak();
+
+  assert.equal(factory.last(ENGINE_IDS.WEB_SPEECH).spokenOptions[0].rate, 1.25);
+});
+
+test("sans vitesse demandée, le moteur en reçoit une quand même", async () => {
+  // Le défaut doit venir de la façade, pas du moteur : un moteur qui oublierait
+  // sa valeur par défaut lirait alors à une vitesse indéterminée.
+  const { service, factory } = makeService();
+
+  await service.load(segments, { lang: "fr" });
+  await service.speak();
+
+  assert.equal(factory.last(ENGINE_IDS.WEB_SPEECH).spokenOptions[0].rate, 1);
 });

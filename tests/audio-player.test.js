@@ -57,6 +57,7 @@ class FakeSpeakEngine {
 class FakeSynthesizeEngine {
   mode = ENGINE_MODE.SYNTHESIZE;
   calls = [];
+  options = [];
 
   constructor(sampleRate = RATE, samplesPerSegment = 100, delayMs = 0) {
     this.sampleRate = sampleRate;
@@ -64,8 +65,9 @@ class FakeSynthesizeEngine {
     this.delayMs = delayMs;
   }
 
-  async synthesize(text) {
+  async synthesize(text, options) {
     this.calls.push(text);
+    this.options.push(options);
     if (this.delayMs) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
     return { samples: new Float32Array(this.samplesPerSegment), sampleRate: this.sampleRate };
   }
@@ -275,6 +277,26 @@ test("mode synthèse : un article court tient dans un seul fichier", async () =>
 
     const states = events.filter((e) => e.type === "state-change").map((e) => e.state);
     assert.deepEqual(states, [STATES.GENERATING, STATES.PLAYING]);
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("mode synthèse : la vitesse est transmise à chaque segment", async () => {
+  // Le worker Piper sait accélérer la parole (length_scale / speed) ; encore
+  // faut-il que la valeur lui parvienne. Elle ne parvenait à personne.
+  const stubs = installBrowserStubs();
+  try {
+    const engine = new FakeSynthesizeEngine();
+    const player = new AudioPlayer(engine);
+    player.load(segments(2), { speed: 1.25 });
+
+    await player.play();
+
+    assert.deepEqual(
+      engine.options.map((options) => options.speed),
+      [1.25, 1.25],
+    );
   } finally {
     stubs.restore();
   }

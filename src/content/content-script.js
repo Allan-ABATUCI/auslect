@@ -11,8 +11,11 @@ function extractArticle() {
 
   return {
     title: article.title,
-    html: article.content, // HTML nettoyé : garde les frontières de paragraphes/titres.
-    text: article.textContent,
+    // Le HTML nettoyé garde les frontières de paragraphes et de titres, dont le
+    // segmenteur a besoin. Le texte brut de Readability n'est volontairement pas
+    // transmis : ce serait une copie de l'article de plus sur deux sauts de
+    // messagerie, pour personne.
+    html: article.content,
     lang: document.documentElement.lang || article.lang || "fr",
   };
 }

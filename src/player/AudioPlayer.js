@@ -109,10 +109,6 @@ export class AudioPlayer {
     return this.#index;
   }
 
-  get total() {
-    return this.#segments.length;
-  }
-
   /** Remplace le moteur courant : tout audio déjà généré devient caduc. */
   setEngine(engine) {
     if (engine === this.#engine) return;
@@ -249,6 +245,7 @@ export class AudioPlayer {
 
     this.#engine.speak(segment.text, {
       lang: this.#options.lang,
+      rate: this.#options.speed,
       onEnd: () => {
         // Si pause()/stop() est passé entre-temps, on ne doit pas enchaîner.
         if (this.#state !== STATES.PLAYING) return;
@@ -320,8 +317,7 @@ export class AudioPlayer {
     for (const [i, segment] of this.#segments.entries()) {
       const startedAt = performance.now();
       const result = await this.#engine.synthesize(segment.text, {
-        lang: this.#options.lang,
-        voice: this.#options.voice,
+        speed: this.#options.speed,
       });
       elapsed += (performance.now() - startedAt) / 1000;
       if (token !== this.#generationToken) throw new Error("Génération annulée.");
@@ -490,7 +486,7 @@ export class AudioPlayer {
       }
     });
 
-    this.#bindMediaControls({ seekable: true });
+    this.#bindMediaControls();
 
     this.#audio = audio;
     return audio;
@@ -520,20 +516,19 @@ export class AudioPlayer {
 
   /**
    * Branche les contrôles système (casque, écran verrouillé).
-   * Les deux sorties acceptent play/pause/stop ; le déplacement dans la piste
-   * n'a de sens que sur l'audio complet, la lecture progressive ayant déjà
-   * programmé ses segments sur l'horloge audio.
+   * Appelé depuis #ensureAudioElement, donc seulement en mode SYNTHESIZE : le
+   * mode parlé ne crée aucun élément média, donc aucune session à contrôler.
    */
-  #bindMediaControls({ seekable }) {
+  #bindMediaControls() {
     bindMediaSession({
       onPlay: () => this.resume(),
       onPause: () => this.pause(),
       onStop: () => this.stop(),
-      onPrevious: seekable ? () => this.skipBlock(-1) : null,
-      onNext: seekable ? () => this.skipBlock(1) : null,
-      onSeekBackward: seekable ? () => this.seekBy(-SEEK_STEP) : null,
-      onSeekForward: seekable ? () => this.seekBy(SEEK_STEP) : null,
-      onSeekTo: seekable ? (details) => this.#seekTo(details.seekTime ?? 0) : null,
+      onPrevious: () => this.skipBlock(-1),
+      onNext: () => this.skipBlock(1),
+      onSeekBackward: () => this.seekBy(-SEEK_STEP),
+      onSeekForward: () => this.seekBy(SEEK_STEP),
+      onSeekTo: (details) => this.#seekTo(details.seekTime ?? 0),
     });
   }
 

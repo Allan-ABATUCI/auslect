@@ -29,10 +29,6 @@ export class TTSService {
     return instance;
   }
 
-  get preferredEngineId() {
-    return this.#preferredEngineId;
-  }
-
   /** Moteur souhaité par l'utilisateur ; le moteur réellement utilisé peut différer. */
   setPreferredEngine(engineId) {
     this.#preferredEngineId = engineId;
@@ -41,13 +37,14 @@ export class TTSService {
   /**
    * Charge un article : choisit le moteur adapté, le prépare, puis segmente.
    * @param {Array<{text: string, blockIndex: number, isHeading: boolean}>} segments
+   * @param {{ lang?: string, title?: string, speed?: number }} [options]
    */
-  async load(segments, { lang, title } = {}) {
+  async load(segments, { lang, title, speed = 1 } = {}) {
     this.#title = title ?? "";
     const engine = await this.#resolveEngine(lang);
 
     this.#player.setEngine(engine);
-    this.#player.load(segments, { lang, title });
+    this.#player.load(segments, { lang, title, speed });
   }
 
   async speak() {
@@ -66,14 +63,16 @@ export class TTSService {
     this.#player.stop();
   }
 
+  /**
+   * Ce que le popup doit afficher : il ne garde aucun état de son côté.
+   * `activeEngineId` n'est pas affiché mais reste le seul moyen d'observer
+   * l'arbitrage des replis — c'est sur lui que s'appuient les tests.
+   */
   getSnapshot() {
     return {
       state: this.#player.state,
-      preferredEngineId: this.#preferredEngineId,
       activeEngineId: this.#activeEngineId,
       title: this.#title,
-      index: this.#player.index,
-      total: this.#player.total,
     };
   }
 
@@ -133,10 +132,9 @@ export class TTSService {
       this.#initialized.add(engineId);
     }
 
-    if (this.#activeEngineId !== engineId) {
-      this.#activeEngineId = engineId;
-      this.#emit({ type: "engine-change", engineId, label: engine.label });
-    }
+    // Pas d'événement ici : seul un repli mérite d'être annoncé, et il l'est
+    // déjà par "engine-fallback", que les deux interfaces affichent.
+    this.#activeEngineId = engineId;
     return engine;
   }
 
